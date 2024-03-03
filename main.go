@@ -5,13 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/sqs"
 )
 
 type Order struct {
@@ -21,81 +18,32 @@ type Order struct {
 	Status      *string `json:"Status"`
 }
 
-func HandleLambdaEvent(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
-	queueURL := os.Getenv("QUEUE_URL")
-	log.Printf("Order receiving lambda invoked...")
+type Response struct {
+	Message string `json:"Answer"`
+}
 
-	if queueURL == "" {
-		log.Println("Error: QUEUE_URL environment variable is not set.")
-		return events.APIGatewayProxyResponse{
-			StatusCode: 503,
-			Headers: map[string]string{
-				"Content-Type": "application/json",
-			},
-			Body: string("Queue url is missing from environment variable."),
-		}, fmt.Errorf("QUEUE_URL environment variable is not set")
+func HandleSQSEvent(ctx context.Context, sqsEvent events.SQSEvent) error {
+	log.Printf("Order logging lambda invoked...")
+
+	for _, record := range sqsEvent.Records {
+		log.Printf("Iterating on SQS records.")
+		var order Order
+		log.Printf("Record Body: " + record.Body)
+		if unmarshalError := json.Unmarshal([]byte(record.Body), &order); unmarshalError != nil {
+			order.Status = aws.String("Error converting object")
+			return fmt.Errorf("error in logging: %v", unmarshalError)
+		}
+
+		logMessage := fmt.Sprintf("\nOrder Name: %s\nOrder Description: %s\nOrder CreatedAt: %s\nOrder Status: %s\n",
+			order.Name, order.Description, order.CreatedAt, aws.StringValue(order.Status))
+
+		log.Printf("Order received: " + logMessage)
 	}
 
-	var order Order
-	log.Printf("Body: " + request.Body)
-	if unmarshalRequestBodyError := json.Unmarshal([]byte(request.Body), &order); unmarshalRequestBodyError != nil {
-		log.Printf("Error unmarshalling body: %v", unmarshalRequestBodyError)
-		return events.APIGatewayProxyResponse{
-			StatusCode: 400,
-			Body:       "Bad Request",
-		}, nil
-	}
-
-	sess, err := session.NewSession()
-	if err != nil {
-		log.Printf("Error creating AWS session: %v", err)
-		return events.APIGatewayProxyResponse{
-			StatusCode: 503,
-			Headers: map[string]string{
-				"Content-Type": "application/json",
-			},
-			Body: string("Can't create AWS sessions."),
-		}, err
-	}
-
-	sqsClient := sqs.New(sess)
-	receivedOrder := "From OrderLoggingLambda"
-	order.Status = &receivedOrder
-
-	messageBody := fmt.Sprintf(`{"Name": "%s", "Description": "%s", "CreatedAt": "%s", "Status": "%s"}`,
-		order.Name, order.Description, order.CreatedAt, *order.Status)
-
-	sendMessageInput := &sqs.SendMessageInput{
-		MessageBody:  aws.String(messageBody),
-		QueueUrl:     aws.String(queueURL),
-		DelaySeconds: aws.Int64(0),
-	}
-
-	log.Printf("Sending message to SQS: " + messageBody)
-
-	_, err = sqsClient.SendMessage(sendMessageInput)
-	if err != nil {
-		log.Printf("Error sending message to SQS: %v", err)
-		return events.APIGatewayProxyResponse{
-			StatusCode: 503,
-			Headers: map[string]string{
-				"Content-Type": "application/json",
-			},
-			Body: string("Can't send message to SQS."),
-		}, err
-	}
-
-	response := events.APIGatewayProxyResponse{
-		StatusCode: 200,
-		Headers: map[string]string{
-			"Content-Type": "application/json",
-		},
-		Body: string("Order Received Successfully!"),
-	}
-
-	return response, nil
+	log.Printf("Task completed!")
+	return nil
 }
 
 func main() {
-	lambda.Start(HandleLambdaEvent)
+	lambda.Start(HandleSQSEvent)
 }
